@@ -1,15 +1,67 @@
 const express = require("express");
 const cors = require("cors");
+const { Pool } = require("pg");
 require("dotenv").config();
 
 const app = express();
 const PORT = process.env.PORT || 3001;
 
-// Allow requests from your frontend (widget.html opened via file:// or a local server)
 app.use(cors({ origin: "*" }));
 app.use(express.json());
 
-// POST /api/chat — widget.html calls this instead of Groq directly
+// PostgreSQL connection
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+});
+
+// Auto-create users table on startup
+pool.query(`
+  CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    email TEXT UNIQUE NOT NULL,
+    name TEXT NOT NULL,
+    created_at TIMESTAMP DEFAULT NOW()
+  )
+`).then(() => console.log("✅ Users table ready"))
+  .catch(err => console.error("❌ Table creation error:", err));
+
+// POST /api/check-user — check if email exists
+app.post("/api/check-user", async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ error: "email is required" });
+
+  try {
+    const result = await pool.query("SELECT * FROM users WHERE email = $1", [email.toLowerCase()]);
+    if (result.rows.length > 0) {
+      res.json({ exists: true, user: result.rows[0] });
+    } else {
+      res.json({ exists: false });
+    }
+  } catch (err) {
+    console.error("check-user error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// POST /api/save-user — save new user
+app.post("/api/save-user", async (req, res) => {
+  const { email, name } = req.body;
+  if (!email || !name) return res.status(400).json({ error: "email and name are required" });
+
+  try {
+    await pool.query(
+      "INSERT INTO users (email, name) VALUES ($1, $2) ON CONFLICT (email) DO NOTHING",
+      [email.toLowerCase(), name]
+    );
+    res.json({ success: true });
+  } catch (err) {
+    console.error("save-user error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+});
+
+// POST /api/chat — proxy to Groq
 app.post("/api/chat", async (req, res) => {
   const { messages, model = "llama-3.3-70b-versatile" } = req.body;
 
